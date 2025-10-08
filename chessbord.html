@@ -1,0 +1,354 @@
+<!--
+Simple interactive chessboard (HTML + CSS + JS)
+Features:
+- Responsive 8x8 chessboard using CSS Grid
+- Initial chess setup using Unicode chess symbols
+- Drag & drop pieces between squares
+- Click-to-select alternative for touch devices
+- Highlights selected square and possible drop targets (no move legality checks)
+
+You can copy this file to index.html and open it in a browser.
+-->
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Chess Board</title>
+  <style>
+    :root{
+      --light: #f0d9b5;
+      --dark:  #b58863;
+      --accent: rgba(72, 133, 237, 0.35);
+      --mark: rgba(46, 204, 113, 0.35);
+      --board-size: min(90vmin, 800px);
+      --square-size: calc(var(--board-size) / 8);
+      font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;
+    }
+
+    body{
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      height:100vh;
+      margin:0;
+      gap:24px;
+      background: linear-gradient(180deg,#eef2f7,#e6eefb);
+      color:#222;
+      padding:20px;
+      box-sizing:border-box;
+    }
+
+    .wrapper{
+      display:flex;
+      gap:20px;
+      align-items:flex-start;
+    }
+
+    .board{
+      width:var(--board-size);
+      height:var(--board-size);
+      display:grid;
+      grid-template-columns: repeat(8, 1fr);
+      grid-template-rows: repeat(8, 1fr);
+      border-radius:12px;
+      box-shadow:0 8px 30px rgba(0,0,0,0.12);
+      overflow:hidden;
+      position:relative;
+    }
+
+    .square{
+      width:100%;
+      height:100%;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      user-select:none;
+      font-size: calc(var(--square-size) * 0.55);
+      cursor:grab;
+      transition: background 150ms ease, transform 80ms ease;
+    }
+
+    .square:active{ cursor:grabbing; }
+
+    .light{ background:var(--light); }
+    .dark{ background:var(--dark); }
+
+    .square.highlight{ background: var(--accent) !important; }
+    .square.mark{ background: var(--mark) !important; }
+
+    .piece{
+      pointer-events:auto;
+      touch-action:none;
+      display:inline-block;
+      line-height:1;
+    }
+
+    /* Board coordinates on sides */
+    .coords{
+      position:absolute;
+      pointer-events:none;
+      inset:0;
+      display:grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+    }
+
+    .rank-labels{
+      position:absolute;
+      left: -36px; top: 0; bottom:0;
+      display:flex; flex-direction:column; justify-content:stretch;
+      gap:0; align-items:center;
+    }
+
+    .file-labels{
+      position:absolute;
+      bottom: -36px; left:0; right:0;
+      display:flex; gap:0; justify-content:space-between; padding:0 4px;
+    }
+
+    .coord{
+      width:36px; text-align:center; font-weight:600; color:#333; opacity:0.85;
+      display:flex; align-items:center; justify-content:center;
+    }
+
+    .panel{
+      width:260px; max-width:30vw; min-width:180px;
+      background:white; padding:14px; border-radius:12px; box-shadow:0 6px 20px rgba(0,0,0,0.08);
+    }
+
+    button{ padding:8px 12px; border-radius:8px; border:1px solid #d0d6de; background:transparent; cursor:pointer }
+    h3{ margin:6px 0 12px 0 }
+    p.small{ margin:4px 0; font-size:13px; color:#555 }
+
+    @media (max-width:700px){
+      body{ padding:12px }
+      .wrapper{ flex-direction:column; align-items:center }
+      .panel{ width:100% }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="board" id="board" aria-label="Chess board">
+      <!-- squares are generated via JS -->
+      <div class="coords">
+        <div class="rank-labels" id="ranks"></div>
+        <div class="file-labels" id="files"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Simple Chess Board</h3>
+      <p class="small">Drag & drop pieces, or tap to select and move (touch friendly). This demo does not enforce chess rules — it only moves pieces visually. Tell me if you want legal move enforcement, highlights for captures, or AI.</p>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+        <button id="resetBtn">Reset</button>
+        <button id="flipBtn">Flip Board</button>
+        <button id="clearBtn">Clear Pieces</button>
+      </div>
+      <hr style="margin:12px 0">
+      <p class="small">Coordinates are shown on the board. Unicode chess pieces are used so no external images are required.</p>
+    </div>
+  </div>
+
+  <script>
+    // Unicode chess pieces
+    const UNICODE = {
+      'r': '\u265C','n':'\u265E','b':'\u265D','q':'\u265B','k':'\u265A','p':'\u265F', // black
+      'R': '\u2656','N':'\u2658','B':'\u2657','Q':'\u2655','K':'\u2654','P':'\u2659'  // white
+    };
+
+    // Initial setup using FEN-like rows (white uppercase, black lowercase)
+    const START_ROWS = [
+      'rnbqkbnr',
+      'pppppppp',
+      '........',
+      '........',
+      '........',
+      '........',
+      'PPPPPPPP',
+      'RNBQKBNR'
+    ];
+
+    const boardEl = document.getElementById('board');
+    const ranksEl = document.getElementById('ranks');
+    const filesEl = document.getElementById('files');
+
+    let flipped = false;
+
+    function coordToIndex(file, rank){
+      // file: 0..7 (a..h), rank: 0..7 (top..bottom in DOM rendering)
+      return rank * 8 + file;
+    }
+
+    function indexToAlgebraic(i){
+      const file = i % 8;
+      const rank = 7 - Math.floor(i/8); // algebraic ranks 1..8 from bottom
+      return String.fromCharCode(97 + file) + (rank + 1);
+    }
+
+    function renderBoard(rows){
+      boardEl.innerHTML = '';
+      // create squares from top (row 0) to bottom (row 7)
+      for(let r=0;r<8;r++){
+        for(let f=0;f<8;f++){
+          const square = document.createElement('div');
+          const isLight = (r + f) % 2 === 0;
+          square.className = 'square ' + (isLight ? 'light' : 'dark');
+          const pieceChar = rows[r][f];
+          square.dataset.index = coordToIndex(f,r);
+          square.dataset.file = f;
+          square.dataset.rank = r;
+
+          // set id as algebraic for convenience
+          const index = coordToIndex(f,r);
+          square.id = 'sq-'+indexToAlgebraic(index);
+
+          if(pieceChar !== '.'){
+            const piece = document.createElement('span');
+            piece.className = 'piece';
+            piece.draggable = true;
+            piece.textContent = UNICODE[pieceChar] || '';
+            // store original piece code
+            piece.dataset.piece = pieceChar;
+            square.appendChild(piece);
+          }
+
+          // Drag & drop events
+          square.addEventListener('dragstart', onDragStart);
+          square.addEventListener('dragover', onDragOver);
+          square.addEventListener('drop', onDrop);
+          square.addEventListener('dragend', onDragEnd);
+
+          // Click/tap selection
+          square.addEventListener('click', onSquareClick);
+
+          boardEl.appendChild(square);
+        }
+      }
+
+      // add coordinates
+      renderCoordinates();
+    }
+
+    function renderCoordinates(){
+      ranksEl.innerHTML = '';
+      filesEl.innerHTML = '';
+      // ranks (8..1) next to rows top->bottom
+      for(let r=0;r<8;r++){
+        const span = document.createElement('div');
+        span.className = 'coord';
+        span.textContent = 8 - r;
+        ranksEl.appendChild(span);
+      }
+      // files (a..h) left->right
+      const files = 'abcdefgh'.split('');
+      for(let i=0;i<8;i++){
+        const span = document.createElement('div');
+        span.className = 'coord';
+        span.textContent = files[i];
+        filesEl.appendChild(span);
+      }
+    }
+
+    // Drag state
+    let dragSource = null;
+
+    function onDragStart(e){
+      const sq = e.target.closest('.square');
+      if(!sq) return;
+      dragSource = sq;
+      e.dataTransfer.setData('text/plain', sq.id);
+      // show a ghost image using the text
+      const piece = sq.querySelector('.piece');
+      if(piece){
+        const img = document.createElement('canvas');
+        const size = 64; img.width = img.height = size; const ctx = img.getContext('2d');
+        ctx.font = '48px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillText(piece.textContent, size/2, size/2);
+        e.dataTransfer.setDragImage(img, size/2, size/2);
+      }
+      sq.classList.add('highlight');
+    }
+    function onDragOver(e){ e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }
+    function onDrop(e){
+      e.preventDefault();
+      const target = e.currentTarget;
+      const srcId = e.dataTransfer.getData('text/plain');
+      const src = document.getElementById(srcId);
+      if(!src) return;
+      movePieceElement(src, target);
+      clearHighlights();
+      dragSource = null;
+    }
+    function onDragEnd(e){ clearHighlights(); dragSource = null; }
+
+    // Click/tap selection logic
+    let selectedSquare = null;
+    function onSquareClick(e){
+      const sq = e.currentTarget;
+      if(selectedSquare === null){
+        // select only if has piece
+        if(sq.querySelector('.piece')){
+          selectedSquare = sq;
+          sq.classList.add('highlight');
+          // mark possible targets visually (all empty squares + captures in this demo)
+          document.querySelectorAll('.square').forEach(s=> s.classList.add('mark'));
+        }
+      } else if(selectedSquare === sq){
+        // deselect
+        clearHighlights();
+        selectedSquare = null;
+      } else {
+        // move piece
+        movePieceElement(selectedSquare, sq);
+        clearHighlights();
+        selectedSquare = null;
+      }
+    }
+
+    function movePieceElement(fromSq, toSq){
+      if(!fromSq) return;
+      const piece = fromSq.querySelector('.piece');
+      if(!piece) return;
+      // remove any piece in destination (capture)
+      const existing = toSq.querySelector('.piece');
+      if(existing) existing.remove();
+      toSq.appendChild(piece);
+    }
+
+    function clearHighlights(){
+      document.querySelectorAll('.square').forEach(s=> s.classList.remove('highlight','mark'));
+    }
+
+    // Utilities
+    function buildRowsFromSetup(setup){
+      // accepts START_ROWS-like array of 8 strings each length 8
+      return setup.map(r => r.padEnd(8,'.').slice(0,8));
+    }
+
+    // Controls
+    document.getElementById('resetBtn').addEventListener('click', ()=>{
+      renderBoard(buildRowsFromSetup(START_ROWS));
+    });
+    document.getElementById('clearBtn').addEventListener('click', ()=>{
+      // clear pieces by replacing letters with dots
+      const empty = Array(8).fill('........');
+      renderBoard(empty);
+    });
+    document.getElementById('flipBtn').addEventListener('click', ()=>{
+      flipped = !flipped;
+      boardEl.style.transform = flipped ? 'rotate(180deg)' : 'none';
+      // rotate contents back so pieces and coords are readable
+      boardEl.querySelectorAll('.square').forEach(s => s.style.transform = flipped ? 'rotate(180deg)' : 'none');
+    });
+
+    // init
+    renderBoard(buildRowsFromSetup(START_ROWS));
+
+    // make board touch friendly: support tap-drag by preventing native image dragging on mobile
+    document.addEventListener('touchstart', function(){ document.querySelectorAll('.piece').forEach(p=> p.draggable=false); }, {once:true});
+  </script>
+</body>
+</html>
